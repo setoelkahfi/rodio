@@ -27,6 +27,7 @@ pub use self::from_factory::{from_factory, FromFactoryIter};
 pub use self::from_iter::{from_iter, FromIter};
 pub use self::linear_ramp::LinearGainRamp;
 pub use self::mix::Mix;
+pub use self::overdrive::Overdrive;
 pub use self::pausable::Pausable;
 pub use self::periodic::PeriodicAccess;
 pub use self::position::TrackPosition;
@@ -64,6 +65,7 @@ mod from_factory;
 mod from_iter;
 mod linear_ramp;
 mod mix;
+mod overdrive;
 mod pausable;
 mod periodic;
 mod position;
@@ -585,6 +587,15 @@ pub trait Source: Iterator<Item = Sample> {
         Self: Sized,
     {
         distortion::distortion(self, gain, threshold)
+    }
+
+    /// Applies an overdrive effect to the sound.
+    #[inline]
+    fn overdrive(self, gain: f32, color: f32) -> Overdrive<Self>
+    where
+        Self: Sized,
+    {
+        overdrive::overdrive(self, gain, color)
     }
 
     /// Applies a compressor effect to the sound.
