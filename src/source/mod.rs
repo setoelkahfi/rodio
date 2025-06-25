@@ -3,9 +3,11 @@
 use core::fmt;
 use core::time::Duration;
 
-use crate::common::{ChannelCount, SampleRate};
-use crate::Sample;
-use amplify::to_linear;
+use crate::{
+    common::{ChannelCount, SampleRate},
+    math, Sample,
+};
+
 use dasp_sample::FromSample;
 
 pub use self::agc::AutomaticGainControl;
@@ -25,6 +27,7 @@ pub use self::fadein::FadeIn;
 pub use self::fadeout::FadeOut;
 pub use self::from_factory::{from_factory, FromFactoryIter};
 pub use self::from_iter::{from_iter, FromIter};
+pub use self::limit::{Limit, LimitSettings};
 pub use self::linear_ramp::LinearGainRamp;
 pub use self::mix::Mix;
 pub use self::overdrive::Overdrive;
@@ -63,6 +66,7 @@ mod fadein;
 mod fadeout;
 mod from_factory;
 mod from_iter;
+mod limit;
 mod linear_ramp;
 mod mix;
 mod overdrive;
@@ -255,7 +259,7 @@ pub trait Source: Iterator<Item = Sample> {
     where
         Self: Sized,
     {
-        amplify::amplify(self, to_linear(value))
+        amplify::amplify(self, math::db_to_linear(value))
     }
 
     /// Normalized amplification in `[0.0, 1.0]` range. This method better matches the perceived
@@ -409,6 +413,60 @@ pub trait Source: Iterator<Item = Sample> {
         Self: Sized,
     {
         fadeout::fadeout(self, duration)
+    }
+
+    /// Applies limiting to prevent audio peaks from exceeding a threshold.
+    ///
+    /// A limiter reduces the amplitude of audio signals that exceed a specified level,
+    /// preventing clipping and maintaining consistent output levels. The limiter processes
+    /// each channel independently for envelope detection but applies gain reduction uniformly
+    /// across all channels to preserve stereo imaging.
+    ///
+    /// # Arguments
+    ///
+    /// * `settings` - [`LimitSettings`] struct containing:
+    ///   - **threshold** - Level in dB where limiting begins (must be negative)
+    ///   - **knee_width** - Range in dB over which limiting gradually increases
+    ///   - **attack** - Time to respond to level increases
+    ///   - **release** - Time to recover after level decreases
+    ///
+    /// # Returns
+    ///
+    /// A [`Limit`] source that applies the limiting to the input audio.
+    ///
+    /// # Examples
+    ///
+    /// ## Basic Usage with Default Settings
+    ///
+    /// ```
+    /// use rodio::source::{SineWave, Source, LimitSettings};
+    /// use std::time::Duration;
+    ///
+    /// // Create a loud sine wave and apply default limiting (-1dB threshold)
+    /// let source = SineWave::new(440.0).amplify(2.0);
+    /// let limited = source.limit(LimitSettings::default());
+    /// ```
+    ///
+    /// ## Custom Settings with Builder Pattern
+    ///
+    /// ```
+    /// use rodio::source::{SineWave, Source, LimitSettings};
+    /// use std::time::Duration;
+    ///
+    /// let source = SineWave::new(440.0).amplify(3.0);
+    /// let settings = LimitSettings::default()
+    ///     .with_threshold(-6.0)                    // Limit at -6dB
+    ///     .with_knee_width(2.0)                    // 2dB soft knee
+    ///     .with_attack(Duration::from_millis(3))   // Fast 3ms attack
+    ///     .with_release(Duration::from_millis(50)); // 50ms release
+    ///
+    /// let limited = source.limit(settings);
+    /// ```
+    fn limit(self, settings: LimitSettings) -> Limit<Self>
+    where
+        Self: Sized,
+    {
+        limit::limit(self, settings)
     }
 
     /// Applies a linear gain ramp to the sound.
@@ -650,7 +708,7 @@ pub enum SeekError {
     #[cfg(feature = "symphonia")]
     /// The symphonia decoder ran into an issue
     SymphoniaDecoder(crate::decoder::symphonia::SeekError),
-    #[cfg(feature = "wav")]
+    #[cfg(feature = "hound")]
     /// The hound (wav) decoder ran into an issue
     HoundDecoder(std::io::Error),
     // Prefer adding an enum variant to using this. It's meant for end users their
@@ -670,7 +728,7 @@ impl fmt::Display for SeekError {
             }
             #[cfg(feature = "symphonia")]
             SeekError::SymphoniaDecoder(err) => write!(f, "Error seeking: {}", err),
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "hound")]
             SeekError::HoundDecoder(err) => write!(f, "Error seeking in wav source: {}", err),
             SeekError::Other(_) => write!(f, "An error occurred"),
         }
@@ -682,7 +740,7 @@ impl std::error::Error for SeekError {
             SeekError::NotSupported { .. } => None,
             #[cfg(feature = "symphonia")]
             SeekError::SymphoniaDecoder(err) => Some(err),
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "hound")]
             SeekError::HoundDecoder(err) => Some(err),
             SeekError::Other(err) => Some(err.as_ref()),
         }
@@ -704,7 +762,7 @@ impl SeekError {
             SeekError::NotSupported { .. } => true,
             #[cfg(feature = "symphonia")]
             SeekError::SymphoniaDecoder(_) => false,
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "hound")]
             SeekError::HoundDecoder(_) => false,
             SeekError::Other(_) => false,
         }

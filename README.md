@@ -6,15 +6,14 @@
 
 Rust playback library.
 
-Playback is handled by [cpal](https://github.com/RustAudio/cpal). Format decoding can be handled either by [Symphonia](https://github.com/pdeljanov/Symphonia), or by format-specific decoders:
+Playback is handled by [cpal](https://github.com/RustAudio/cpal). Format decoding is handled by [Symphonia](https://github.com/pdeljanov/Symphonia) by default, or by optional format-specific decoders:
 
- - MP3 by [minimp3](https://github.com/lieff/minimp3) (but defaults to [Symphonia](https://github.com/pdeljanov/Symphonia)).
- - WAV by [hound](https://github.com/ruud-v-a/hound).
- - Vorbis by [lewton](https://github.com/est31/lewton).
  - FLAC by [claxon](https://github.com/ruuda/claxon).
- - MP4 and AAC (both disabled by default) are handled only by [Symphonia](https://github.com/pdeljanov/Symphonia).
+ - MP3 by [minimp3](https://github.com/lieff/minimp3).
+ - Vorbis by [lewton](https://github.com/est31/lewton).
+ - WAV by [hound](https://github.com/ruud-v-a/hound).
 
-See [the docs](https://docs.rs/rodio/latest/rodio/#alternative-decoder-backends) for more details on backends.
+See [the feature flags](https://docs.rs/crate/rodio/latest/features) for more details on formats, and other features.
 
 # [Documentation](http://docs.rs/rodio)
 
@@ -51,18 +50,20 @@ Through cpal rodio depends on the alsa library (libasound & libasound-dev), this
 - Install crossbuild-essential-arm64: `sudo apt-get install crossbuild-essential-arm64 clang`
 - Add the aarch64 target for rust: `rustup target add aarch64-unknown-linux-gnu`
 - Add the architecture arm64 to apt using: `sudo dpkg --add-architecture arm64`
-- Install the [multi-arch](https://wiki.debian.org/Multiarch/HOWTO) version of libasound2-dev for arm64 using: `sudo apt install libasound2-dev:arm64` 
+- Install the [multi-arch](https://wiki.debian.org/Multiarch/HOWTO) version of libasound2-dev for arm64 using: `sudo apt install libasound2-dev:arm64`
 - Build with the pkg config sysroot set to /usr/aarch64-linux-gnu and aarch64-linux-gnu as linker: `PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu RUSTFLAGS="-C linker=aarch64-linux-gnu-gcc" cargo build --target aarch64-unknown-linux-gnu`
 
-This will work for other Linux targets too if you change the architecture in the
-command and if there are multi-arch packages available.
+This will work for other Linux targets too if you change the architecture in the command and if there are multi-arch packages available.
 
-You might want to look at [cross](https://github.com/cross-rs/cross) if you are
-running on a non debian system or want to make this more repeatable.
+You might want to look at [cross](https://github.com/cross-rs/cross) if you are running on a non debian system or want to make this more repeatable.
 
 # Contributing
 
-For information on how to contribute to this project, please see our [Contributing Guide](CONTRIBUTING.md).
+We love it when people join making rodio better. There are many ways to help not matter how experienced you are with audio or Rust. We would especially love help with:
+
+- Reviewing PR's: we rely on the community to keep rodio correct, fast and maintainable. Absolutely anyone is welcome to leave reviews. Anyone can catch missing or unnecessary tests, unclear docs logic mistakes etc.
+- Improving the docs: You only learn something for the first time once. Many of us forgot what was hard when things where new. Your experience using rodio for the first time can really help out here. You probably know best what needs clearification and how it should be written down. It can be anything, maybe a  paragraph on audio theory or an extra example.
+- Adding features: we love it when we get new features or existing onces get even better. Let us know what you are working on early. Not only can the rest of the community help out with the design we can help make the review and merge smooth. Please see our [Contributing Guide](CONTRIBUTING.md) for more to get you started.
 
 ## License
 [License]: #license
