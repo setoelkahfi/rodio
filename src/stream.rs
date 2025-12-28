@@ -5,17 +5,19 @@
 //!
 //! There is also a convenience function `play` for using that output mixer to
 //! play a single sound.
-use crate::common::{ChannelCount, SampleRate};
-use crate::decoder;
-use crate::mixer::{mixer, Mixer, MixerSource};
+use crate::common::{assert_error_traits, ChannelCount, SampleRate};
+use crate::math::nz;
+use crate::mixer::{mixer, Mixer};
 use crate::sink::Sink;
+use crate::{decoder, Source};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, Sample, SampleFormat, StreamConfig};
+use cpal::{BufferSize, Sample, SampleFormat, StreamConfig, I24};
+use std::fmt;
 use std::io::{Read, Seek};
 use std::marker::Sync;
-use std::{error, fmt};
+use std::num::NonZero;
 
-const HZ_44100: SampleRate = 44_100;
+const HZ_44100: SampleRate = nz!(44_100);
 
 /// `cpal::Stream` container. Use `mixer()` method to control output.
 ///
@@ -71,8 +73,16 @@ impl Drop for OutputStream {
             #[cfg(feature = "tracing")]
             tracing::debug!("Dropping OutputStream, audio playing through this stream will stop");
             #[cfg(not(feature = "tracing"))]
-            eprintln!("Dropping OutputStream, audio playing through this stream will stop")
+            eprintln!("Dropping OutputStream, audio playing through this stream will stop, to prevent this message from appearing use tracing or call `.log_on_drop(false)` on this OutputStream")
         }
+    }
+}
+
+impl fmt::Debug for OutputStream {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("OutputStream")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
     }
 }
 
@@ -88,7 +98,7 @@ pub struct OutputStreamConfig {
 impl Default for OutputStreamConfig {
     fn default() -> Self {
         Self {
-            channel_count: 2,
+            channel_count: nz!(2),
             sample_rate: HZ_44100,
             buffer_size: BufferSize::Default,
             sample_format: SampleFormat::F32,
@@ -121,7 +131,12 @@ impl OutputStreamConfig {
 impl core::fmt::Debug for OutputStreamBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let device = if let Some(device) = &self.device {
-            "Some(".to_owned() + device.name().as_deref().unwrap_or("UnNamed") + ")"
+            "Some(".to_owned()
+                + &device
+                    .description()
+                    .ok()
+                    .map_or("UnNamed".to_string(), |d| d.name().to_string())
+                + ")"
         } else {
             "None".to_owned()
         };
@@ -228,7 +243,7 @@ where
 
     /// Sets number of output stream's channels.
     pub fn with_channels(mut self, channel_count: ChannelCount) -> OutputStreamBuilder<E> {
-        assert!(channel_count > 0);
+        assert!(channel_count.get() > 0);
         self.config.channel_count = channel_count;
         self
     }
@@ -295,8 +310,10 @@ where
         config: &cpal::SupportedStreamConfig,
     ) -> OutputStreamBuilder<E> {
         self.config = OutputStreamConfig {
-            channel_count: config.channels() as ChannelCount,
-            sample_rate: config.sample_rate().0 as SampleRate,
+            channel_count: NonZero::new(config.channels())
+                .expect("no valid cpal config has zero channels"),
+            sample_rate: NonZero::new(config.sample_rate())
+                .expect("no valid cpal config has zero sample rate"),
             sample_format: config.sample_format(),
             ..Default::default()
         };
@@ -306,8 +323,10 @@ where
     /// Set all output stream parameters at once from CPAL stream config.
     pub fn with_config(mut self, config: &cpal::StreamConfig) -> OutputStreamBuilder<E> {
         self.config = OutputStreamConfig {
-            channel_count: config.channels as ChannelCount,
-            sample_rate: config.sample_rate.0 as SampleRate,
+            channel_count: NonZero::new(config.channels)
+                .expect("no valid cpal config has zero channels"),
+            sample_rate: NonZero::new(config.sample_rate)
+                .expect("no valid cpal config has zero sample rate"),
             buffer_size: config.buffer_size,
             ..self.config
         };
@@ -328,7 +347,7 @@ where
 
     /// Open output stream using parameters configured so far.
     pub fn open_stream(self) -> Result<OutputStream, StreamError> {
-        let device = self.device.as_ref().expect("output device specified");
+        let device = self.device.as_ref().expect("No output device specified");
 
         OutputStream::open(device, &self.config, self.error_callback)
     }
@@ -341,7 +360,7 @@ where
     where
         E: Clone,
     {
-        let device = self.device.as_ref().expect("output device specified");
+        let device = self.device.as_ref().expect("No output device specified");
         let error_callback = &self.error_callback;
 
         OutputStream::open(device, &self.config, error_callback.clone()).or_else(|err| {
@@ -375,103 +394,64 @@ where
 impl From<&OutputStreamConfig> for StreamConfig {
     fn from(config: &OutputStreamConfig) -> Self {
         cpal::StreamConfig {
-            channels: config.channel_count as cpal::ChannelCount,
-            sample_rate: cpal::SampleRate(config.sample_rate),
+            channels: config.channel_count.get() as cpal::ChannelCount,
+            sample_rate: config.sample_rate.get(),
             buffer_size: config.buffer_size,
         }
     }
 }
 
 /// An error occurred while attempting to play a sound.
-#[derive(Debug)]
-pub enum PlayError {
+#[derive(Debug, thiserror::Error, Clone)]
+pub enum PlayError
+where
+    Self: Send + Sync + 'static,
+{
     /// Attempting to decode the audio failed.
-    DecoderError(decoder::DecoderError),
+    #[error("Failed to decode audio")]
+    DecoderError(
+        #[from]
+        #[source]
+        decoder::DecoderError,
+    ),
     /// The output device was lost.
+    #[error("No output device")]
     NoDevice,
 }
-
-impl From<decoder::DecoderError> for PlayError {
-    fn from(err: decoder::DecoderError) -> Self {
-        Self::DecoderError(err)
-    }
-}
-
-impl fmt::Display for PlayError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DecoderError(e) => e.fmt(f),
-            Self::NoDevice => write!(f, "NoDevice"),
-        }
-    }
-}
-
-impl error::Error for PlayError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Self::DecoderError(e) => Some(e),
-            Self::NoDevice => None,
-        }
-    }
-}
+assert_error_traits!(PlayError);
 
 /// Errors that might occur when interfacing with audio output.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum StreamError {
     /// Could not start playing the stream, see [cpal::PlayStreamError] for
     /// details.
-    PlayStreamError(cpal::PlayStreamError),
+    #[error("Could not start playing the stream")]
+    PlayStreamError(#[source] cpal::PlayStreamError),
     /// Failed to get the stream config for the given device. See
     /// [cpal::DefaultStreamConfigError] for details.
-    DefaultStreamConfigError(cpal::DefaultStreamConfigError),
+    #[error("Failed to get the stream config for the given device")]
+    DefaultStreamConfigError(#[source] cpal::DefaultStreamConfigError),
     /// Error opening stream with OS. See [cpal::BuildStreamError] for details.
-    BuildStreamError(cpal::BuildStreamError),
+    #[error("Error opening the stream with the OS")]
+    BuildStreamError(#[source] cpal::BuildStreamError),
     /// Could not list supported stream configs for the device. Maybe it
     /// disconnected. For details see: [cpal::SupportedStreamConfigsError].
-    SupportedStreamConfigsError(cpal::SupportedStreamConfigsError),
+    #[error("Could not list supported stream configs for the device. Maybe its disconnected?")]
+    SupportedStreamConfigsError(#[source] cpal::SupportedStreamConfigsError),
     /// Could not find any output device
+    #[error("Could not find any output device")]
     NoDevice,
     /// New cpal sample format that rodio does not yet support please open
     /// an issue if you run into this.
+    #[error("New cpal sample format that rodio does not yet support please open an issue if you run into this.")]
     UnsupportedSampleFormat,
-}
-
-impl fmt::Display for StreamError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::PlayStreamError(e) => e.fmt(f),
-            Self::BuildStreamError(e) => e.fmt(f),
-            Self::DefaultStreamConfigError(e) => e.fmt(f),
-            Self::SupportedStreamConfigsError(e) => e.fmt(f),
-            Self::NoDevice => write!(f, "NoDevice"),
-            Self::UnsupportedSampleFormat => write!(f, "UnsupportedSampleFormat"),
-        }
-    }
-}
-
-impl error::Error for StreamError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Self::PlayStreamError(e) => Some(e),
-            Self::BuildStreamError(e) => Some(e),
-            Self::DefaultStreamConfigError(e) => Some(e),
-            Self::SupportedStreamConfigsError(e) => Some(e),
-            Self::NoDevice => None,
-            Self::UnsupportedSampleFormat => None,
-        }
-    }
 }
 
 impl OutputStream {
     fn validate_config(config: &OutputStreamConfig) {
         if let BufferSize::Fixed(sz) = config.buffer_size {
-            assert!(sz > 0, "fixed buffer size is greater than zero");
+            assert!(sz > 0, "fixed buffer size must be greater than zero");
         }
-        assert!(config.sample_rate > 0, "sample rate is greater than zero");
-        assert!(
-            config.channel_count > 0,
-            "channel number is greater than zero"
-        );
     }
 
     fn open<E>(
@@ -495,128 +475,57 @@ impl OutputStream {
         })
     }
 
-    fn init_stream<E>(
+    fn init_stream<S, E>(
         device: &cpal::Device,
         config: &OutputStreamConfig,
-        mut samples: MixerSource,
+        mut samples: S,
         error_callback: E,
     ) -> Result<cpal::Stream, StreamError>
     where
+        S: Source + Send + 'static,
         E: FnMut(cpal::StreamError) + Send + 'static,
     {
-        let sample_format = config.sample_format;
-        let config = config.into();
+        let cpal_config = config.into();
 
-        match sample_format {
-            cpal::SampleFormat::F32 => device.build_output_stream::<f32, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut()
-                        .for_each(|d| *d = samples.next().unwrap_or(0f32))
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::F64 => device.build_output_stream::<f64, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut()
-                        .for_each(|d| *d = samples.next().map(Sample::from_sample).unwrap_or(0f64))
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::I8 => device.build_output_stream::<i8, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut()
-                        .for_each(|d| *d = samples.next().map(Sample::from_sample).unwrap_or(0i8))
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::I16 => device.build_output_stream::<i16, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut()
-                        .for_each(|d| *d = samples.next().map(Sample::from_sample).unwrap_or(0i16))
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::I32 => device.build_output_stream::<i32, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut()
-                        .for_each(|d| *d = samples.next().map(Sample::from_sample).unwrap_or(0i32))
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::I64 => device.build_output_stream::<i64, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut()
-                        .for_each(|d| *d = samples.next().map(Sample::from_sample).unwrap_or(0i64))
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::U8 => device.build_output_stream::<u8, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut().for_each(|d| {
-                        *d = samples
-                            .next()
-                            .map(Sample::from_sample)
-                            .unwrap_or(u8::MAX / 2)
-                    })
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::U16 => device.build_output_stream::<u16, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut().for_each(|d| {
-                        *d = samples
-                            .next()
-                            .map(Sample::from_sample)
-                            .unwrap_or(u16::MAX / 2)
-                    })
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::U32 => device.build_output_stream::<u32, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut().for_each(|d| {
-                        *d = samples
-                            .next()
-                            .map(Sample::from_sample)
-                            .unwrap_or(u32::MAX / 2)
-                    })
-                },
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::U64 => device.build_output_stream::<u64, _, _>(
-                &config,
-                move |data, _| {
-                    data.iter_mut().for_each(|d| {
-                        *d = samples
-                            .next()
-                            .map(Sample::from_sample)
-                            .unwrap_or(u64::MAX / 2)
-                    })
-                },
-                error_callback,
-                None,
-            ),
-            _ => return Err(StreamError::UnsupportedSampleFormat),
+        macro_rules! build_output_streams {
+            ($($sample_format:tt, $generic:ty);+) => {
+                match config.sample_format {
+                    $(
+                        cpal::SampleFormat::$sample_format => device.build_output_stream::<$generic, _, _>(
+                            &cpal_config,
+                            move |data, _| {
+                                data.iter_mut().for_each(|d| {
+                                    *d = samples
+                                        .next()
+                                        .map(Sample::from_sample)
+                                        .unwrap_or(<$generic>::EQUILIBRIUM)
+                                })
+                            },
+                            error_callback,
+                            None,
+                        ),
+                    )+
+                    _ => return Err(StreamError::UnsupportedSampleFormat),
+                }
+            };
         }
-        .map_err(StreamError::BuildStreamError)
+
+        let result = build_output_streams!(
+            F32, f32;
+            F64, f64;
+            I8, i8;
+            I16, i16;
+            I24, I24;
+            I32, i32;
+            I64, i64;
+            U8, u8;
+            U16, u16;
+            U24, cpal::U24;
+            U32, u32;
+            U64, u64
+        );
+
+        result.map_err(StreamError::BuildStreamError)
     }
 }
 
@@ -634,7 +543,7 @@ pub fn supported_output_configs(
         let max_rate = sf.max_sample_rate();
         let min_rate = sf.min_sample_rate();
         let mut formats = vec![sf.with_max_sample_rate()];
-        let preferred_rate = cpal::SampleRate(HZ_44100);
+        let preferred_rate = HZ_44100.get();
         if preferred_rate < max_rate && preferred_rate > min_rate {
             formats.push(sf.with_sample_rate(preferred_rate))
         }

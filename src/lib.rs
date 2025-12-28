@@ -174,18 +174,22 @@ mod spatial_sink;
 #[cfg(feature = "playback")]
 pub mod stream;
 #[cfg(feature = "wav_output")]
+#[cfg_attr(docsrs, doc(cfg(feature = "wav_output")))]
 mod wav_output;
 
 pub mod buffer;
 pub mod conversions;
 pub mod decoder;
 pub mod math;
+#[cfg(feature = "recording")]
+/// Microphone input support for audio recording.
+pub mod microphone;
 pub mod mixer;
 pub mod queue;
 pub mod source;
 pub mod static_buffer;
 
-pub use crate::common::{ChannelCount, Sample, SampleRate};
+pub use crate::common::{BitDepth, ChannelCount, Sample, SampleRate};
 pub use crate::decoder::Decoder;
 pub use crate::sink::Sink;
 pub use crate::source::Source;
@@ -193,4 +197,8 @@ pub use crate::spatial_sink::SpatialSink;
 #[cfg(feature = "playback")]
 pub use crate::stream::{play, OutputStream, OutputStreamBuilder, PlayError, StreamError};
 #[cfg(feature = "wav_output")]
-pub use crate::wav_output::output_to_wav;
+#[cfg_attr(docsrs, doc(cfg(feature = "wav_output")))]
+pub use crate::wav_output::wav_to_file;
+#[cfg(feature = "wav_output")]
+#[cfg_attr(docsrs, doc(cfg(feature = "wav_output")))]
+pub use crate::wav_output::wav_to_writer;

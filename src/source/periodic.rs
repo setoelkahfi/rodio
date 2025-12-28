@@ -1,8 +1,10 @@
 use std::time::Duration;
 
 use super::SeekError;
-use crate::common::{ChannelCount, SampleRate};
-use crate::Source;
+use crate::{
+    common::{ChannelCount, SampleRate},
+    Source,
+};
 
 /// Internal function that builds a `PeriodicAccess` object.
 pub fn periodic<I, F>(source: I, period: Duration, modifier: F) -> PeriodicAccess<I, F>
@@ -10,19 +12,15 @@ where
     I: Source,
 {
     // TODO: handle the fact that the samples rate can change
-    // TODO: generally, just wrong
-    let update_ms = period.as_secs() as u32 * 1_000 + period.subsec_millis();
-    let update_frequency = (update_ms * source.sample_rate()) / 1000 * source.channels() as u32;
+    let update_frequency = (period.as_secs_f32()
+        * (source.sample_rate().get() as f32)
+        * (source.channels().get() as f32)) as u32;
 
     PeriodicAccess {
         input: source,
         modifier,
         // Can overflow when subtracting if this is 0
-        update_frequency: if update_frequency == 0 {
-            1
-        } else {
-            update_frequency
-        },
+        update_frequency: update_frequency.max(1),
         samples_until_update: 1,
     }
 }
@@ -131,12 +129,13 @@ mod tests {
     use std::time::Duration;
 
     use crate::buffer::SamplesBuffer;
+    use crate::math::nz;
     use crate::source::Source;
 
     #[test]
     fn stereo_access() {
         // Stereo, 1Hz audio buffer
-        let inner = SamplesBuffer::new(2, 1, vec![10.0, -10.0, 10.0, -10.0, 20.0, -20.0]);
+        let inner = SamplesBuffer::new(nz!(2), nz!(1), vec![10.0, -10.0, 10.0, -10.0, 20.0, -20.0]);
 
         let cnt = RefCell::new(0);
 
@@ -164,7 +163,7 @@ mod tests {
     #[test]
     fn fast_access_overflow() {
         // 1hz is lower than 0.5 samples per 5ms
-        let inner = SamplesBuffer::new(1, 1, vec![10.0, -10.0, 10.0, -10.0, 20.0, -20.0]);
+        let inner = SamplesBuffer::new(nz!(1), nz!(1), vec![10.0, -10.0, 10.0, -10.0, 20.0, -20.0]);
         let mut source = inner.periodic_access(Duration::from_millis(5), |_src| {});
 
         source.next();

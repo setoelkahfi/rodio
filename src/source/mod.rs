@@ -1,16 +1,17 @@
 //! Sources of sound and various filters.
 
-use core::fmt;
 use core::time::Duration;
+use std::sync::Arc;
 
 use crate::{
-    common::{ChannelCount, SampleRate},
-    math, Sample,
+    buffer::SamplesBuffer,
+    common::{assert_error_traits, ChannelCount, SampleRate},
+    math, BitDepth, Sample,
 };
 
 use dasp_sample::FromSample;
 
-pub use self::agc::AutomaticGainControl;
+pub use self::agc::{AutomaticGainControl, AutomaticGainControlSettings};
 pub use self::amplify::Amplify;
 pub use self::blt::BltFilter;
 pub use self::buffered::Buffered;
@@ -88,9 +89,18 @@ mod triangle;
 mod uniform;
 mod zero;
 
+#[cfg(feature = "dither")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dither")))]
+pub mod dither;
+#[cfg(feature = "dither")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dither")))]
+pub use self::dither::{Algorithm as DitherAlgorithm, Dither};
+
 #[cfg(feature = "noise")]
+#[cfg_attr(docsrs, doc(cfg(feature = "noise")))]
 pub mod noise;
 #[cfg(feature = "noise")]
+#[cfg_attr(docsrs, doc(cfg(feature = "noise")))]
 pub use self::noise::{Pink, WhiteUniform};
 
 /// A source of samples.
@@ -162,15 +172,32 @@ pub use self::noise::{Pink, WhiteUniform};
 /// channels can potentially change.
 ///
 pub trait Source: Iterator<Item = Sample> {
-    /// Returns the number of samples before the current span ends. `None` means "infinite" or
-    /// "until the sound ends".
-    /// Should never return 0 unless there's no more data.
+    /// Returns the number of samples before the current span ends.
+    ///
+    /// `None` means "infinite" or "until the sound ends". Sources that return `Some(x)` should
+    /// return `Some(0)` if and only if when there's no more data.
     ///
     /// After the engine has finished reading the specified number of samples, it will check
     /// whether the value of `channels()` and/or `sample_rate()` have changed.
+    ///
+    /// # Frame Alignment
+    ///
+    /// Span lengths must be multiples of the channel count to ensure spans end on frame
+    /// boundaries. A "frame" is one sample for each channel. Returning a span length
+    /// that is not a multiple of `channels()` will cause channel misalignment issues.
+    ///
+    /// Note: This returns the total span size, not the remaining samples. Use `Iterator::size_hint`
+    /// to determine how many samples remain in the iterator.
     fn current_span_len(&self) -> Option<usize>;
 
+    /// Returns true if the source is exhausted (has no more samples available).
+    #[inline]
+    fn is_exhausted(&self) -> bool {
+        self.current_span_len() == Some(0)
+    }
+
     /// Returns the number of channels. Channels are always interleaved.
+    /// Should never be Zero
     fn channels(&self) -> ChannelCount;
 
     /// Returns the rate at which the source should be played. In number of samples per second.
@@ -188,6 +215,31 @@ pub trait Source: Iterator<Item = Sample> {
         Self: Sized,
     {
         buffered::buffered(self)
+    }
+
+    /// Applies dithering to the source at the specified bit depth.
+    ///
+    /// Dithering eliminates quantization artifacts during digital audio playback
+    /// and when converting between bit depths. Apply at the target output bit depth.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rodio::source::{SineWave, Source, DitherAlgorithm};
+    /// use rodio::BitDepth;
+    ///
+    /// let source = SineWave::new(440.0)
+    ///     .amplify(0.5)
+    ///     .dither(BitDepth::new(16).unwrap(), DitherAlgorithm::default());
+    /// ```
+    #[cfg(feature = "dither")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "dither")))]
+    #[inline]
+    fn dither(self, target_bits: BitDepth, algorithm: DitherAlgorithm) -> Dither<Self>
+    where
+        Self: Sized,
+    {
+        Dither::new(self, target_bits, algorithm)
     }
 
     /// Mixes this source with another one.
@@ -348,12 +400,13 @@ pub trait Source: Iterator<Item = Sample> {
     ///
     /// ```rust
     /// // Apply Automatic Gain Control to the source (AGC is on by default)
-    /// use rodio::source::{Source, SineWave};
+    /// use rodio::source::{Source, SineWave, AutomaticGainControlSettings};
     /// use rodio::Sink;
+    /// use std::time::Duration;
     /// let source = SineWave::new(444.0); // An example.
     /// let (sink, output) = Sink::new(); // An example.
     ///
-    /// let agc_source = source.automatic_gain_control(1.0, 4.0, 0.0, 5.0);
+    /// let agc_source = source.automatic_gain_control(AutomaticGainControlSettings::default());
     ///
     /// // Add the AGC-controlled source to the sink
     /// sink.append(agc_source);
@@ -362,26 +415,21 @@ pub trait Source: Iterator<Item = Sample> {
     #[inline]
     fn automatic_gain_control(
         self,
-        target_level: f32,
-        attack_time: f32,
-        release_time: f32,
-        absolute_max_gain: f32,
+        agc_settings: AutomaticGainControlSettings,
     ) -> AutomaticGainControl<Self>
     where
         Self: Sized,
     {
         // Added Limits to prevent the AGC from blowing up. ;)
-        const MIN_ATTACK_TIME: f32 = 10.0;
-        const MIN_RELEASE_TIME: f32 = 10.0;
-        let attack_time = attack_time.min(MIN_ATTACK_TIME);
-        let release_time = release_time.min(MIN_RELEASE_TIME);
+        let attack_time_limited = agc_settings.attack_time.min(Duration::from_secs_f32(10.0));
+        let release_time_limited = agc_settings.release_time.min(Duration::from_secs_f32(10.0));
 
         agc::automatic_gain_control(
             self,
-            target_level,
-            attack_time,
-            release_time,
-            absolute_max_gain,
+            agc_settings.target_level,
+            attack_time_limited,
+            release_time_limited,
+            agc_settings.absolute_max_gain,
         )
     }
 
@@ -527,6 +575,33 @@ pub trait Source: Iterator<Item = Sample> {
         Self: Sized,
     {
         speed::speed(self, ratio)
+    }
+
+    /// Consumes the source and returns a SamplesBuffer
+    ///
+    /// Use `take_duration` on infinite sources (like the microphone source) before
+    /// calling `record` to prevent this from hanging forever.
+    ///
+    /// # Note
+    /// As `SamplesBuffer` only supports a single *samplerate* and *channel count*
+    /// all samples are resampled to the initial samplerate and channel count is.
+    ///
+    /// # Example
+    /// ```no_run
+    ///
+    /// # use rodio::source::SineWave;
+    /// # use rodio::Source;
+    /// # use std::time::Duration;
+    /// let wave = SineWave::new(740.0)
+    ///     .amplify(0.2)
+    ///     .take_duration(Duration::from_secs(3));
+    /// let wave = wave.record();
+    /// ```
+    fn record(self) -> SamplesBuffer
+    where
+        Self: Sized,
+    {
+        SamplesBuffer::record_source(self)
     }
 
     /// Adds a basic reverb effect.
@@ -698,50 +773,30 @@ pub trait Source: Iterator<Item = Sample> {
 /// Occurs when `try_seek` fails because the underlying decoder has an error or
 /// does not support seeking.
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error, Clone)]
 pub enum SeekError {
     /// One of the underlying sources does not support seeking
+    #[error("Seeking is not supported by source: {underlying_source}")]
     NotSupported {
         /// The source that did not support seek
         underlying_source: &'static str,
     },
     #[cfg(feature = "symphonia")]
     /// The symphonia decoder ran into an issue
-    SymphoniaDecoder(crate::decoder::symphonia::SeekError),
+    #[error("Symphonia decoder returned an error")]
+    SymphoniaDecoder(#[source] crate::decoder::symphonia::SeekError),
     #[cfg(feature = "hound")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "hound")))]
     /// The hound (wav) decoder ran into an issue
-    HoundDecoder(std::io::Error),
+    #[error("Hound decoder returned an error")]
+    HoundDecoder(#[source] Arc<std::io::Error>),
     // Prefer adding an enum variant to using this. It's meant for end users their
     // own `try_seek` implementations.
     /// Any other error probably in a custom Source
-    Other(Box<dyn std::error::Error + Send>),
+    #[error(transparent)]
+    Other(Arc<dyn std::error::Error + Send + Sync + 'static>),
 }
-impl fmt::Display for SeekError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SeekError::NotSupported { underlying_source } => {
-                write!(f, "Seeking is not supported by source: {underlying_source}")
-            }
-            #[cfg(feature = "symphonia")]
-            SeekError::SymphoniaDecoder(err) => write!(f, "Error seeking: {err}"),
-            #[cfg(feature = "hound")]
-            SeekError::HoundDecoder(err) => write!(f, "Error seeking in wav source: {err}"),
-            SeekError::Other(_) => write!(f, "An error occurred"),
-        }
-    }
-}
-impl std::error::Error for SeekError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            SeekError::NotSupported { .. } => None,
-            #[cfg(feature = "symphonia")]
-            SeekError::SymphoniaDecoder(err) => Some(err),
-            #[cfg(feature = "hound")]
-            SeekError::HoundDecoder(err) => Some(err),
-            SeekError::Other(err) => Some(err.as_ref()),
-        }
-    }
-}
+assert_error_traits!(SeekError);
 
 #[cfg(feature = "symphonia")]
 impl From<crate::decoder::symphonia::SeekError> for SeekError {

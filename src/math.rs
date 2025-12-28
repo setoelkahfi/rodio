@@ -1,5 +1,8 @@
 //! Math utilities for audio processing.
 
+use crate::common::SampleRate;
+use std::time::Duration;
+
 /// Linear interpolation between two samples.
 ///
 /// The result should be equivalent to
@@ -76,6 +79,50 @@ pub fn linear_to_db(linear: f32) -> f32 {
     linear.log2() * std::f32::consts::LOG10_2 * 20.0
 }
 
+/// Converts a time duration to a smoothing coefficient for exponential filtering.
+///
+/// Used for both attack and release filtering in the limiter's envelope detector.
+/// Creates a coefficient that determines how quickly the limiter responds to level changes:
+/// * Longer times = higher coefficients (closer to 1.0) = slower, smoother response
+/// * Shorter times = lower coefficients (closer to 0.0) = faster, more immediate response
+///
+/// The coefficient is calculated using the formula: `e^(-1 / (duration_seconds * sample_rate))`
+/// which provides exponential smoothing behavior suitable for audio envelope detection.
+///
+/// # Arguments
+///
+/// * `duration` - Desired response time (attack or release duration)
+/// * `sample_rate` - Audio sample rate in Hz
+///
+/// # Returns
+///
+/// Smoothing coefficient in the range [0.0, 1.0] for use in exponential filters
+pub(crate) fn duration_to_coefficient(duration: Duration, sample_rate: SampleRate) -> f32 {
+    f32::exp(-1.0 / (duration.as_secs_f32() * sample_rate.get() as f32))
+}
+
+/// Utility macro for getting a `NonZero` from a literal. Especially
+/// useful for passing in `ChannelCount` and `Samplerate`.
+/// Equivalent to: `const { core::num::NonZero::new($n).unwrap() }`
+///
+/// # Example
+/// ```
+/// use rodio::nz;
+/// use rodio::static_buffer::StaticSamplesBuffer;
+/// let buffer = StaticSamplesBuffer::new(nz!(2), nz!(44_100), &[0.0, 0.5, 0.0, 0.5]);
+/// ```
+///
+/// # Panics
+/// If the literal passed in is zero this panicks.
+#[macro_export]
+macro_rules! nz {
+    ($n:literal) => {
+        const { core::num::NonZero::new($n).unwrap() }
+    };
+}
+
+pub use nz;
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -117,7 +164,7 @@ mod test {
     /// - Practical audio range (-60dB to +40dB): max errors ~1x ε
     /// - Extended range (-100dB to +100dB): max errors ~2.3x ε
     /// - Extreme edge cases beyond ±100dB have larger errors but are rarely used
-
+    ///
     /// Based on [Wikipedia's Decibel article].
     ///
     /// [Wikipedia's Decibel article]: https://web.archive.org/web/20230810185300/https://en.wikipedia.org/wiki/Decibel

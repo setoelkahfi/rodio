@@ -1,4 +1,5 @@
 use rodio::source::Source;
+use std::num::NonZero;
 use std::time::Duration;
 
 #[test]
@@ -9,7 +10,7 @@ fn test_limiting_works() {
         .take_duration(Duration::from_millis(60)); // ~2600 samples
 
     let settings = rodio::source::LimitSettings::default()
-        .with_threshold(-6.0)   // -6dB = ~0.5 linear
+        .with_threshold(-6.0) // -6dB = ~0.5 linear
         .with_knee_width(0.5)
         .with_attack(Duration::from_millis(3))
         .with_release(Duration::from_millis(12));
@@ -129,7 +130,11 @@ fn test_limiter_stereo_processing() {
         stereo_samples.push(right_samples[i]);
     }
 
-    let buffer = SamplesBuffer::new(2, 44100, stereo_samples);
+    let buffer = SamplesBuffer::new(
+        NonZero::new(2).unwrap(),
+        NonZero::new(44100).unwrap(),
+        stereo_samples,
+    );
     let settings = rodio::source::LimitSettings::default().with_threshold(-3.0);
 
     let limiter = buffer.limit(settings);
