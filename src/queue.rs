@@ -1,10 +1,10 @@
 //! Queue that plays sounds one after the other.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::math::nz;
 use crate::source::{Empty, SeekError, Source, Zero};
 use crate::Sample;
 
@@ -27,7 +27,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 ///
 pub fn queue(keep_alive_if_empty: bool) -> (Arc<SourcesQueueInput>, SourcesQueueOutput) {
     let input = Arc::new(SourcesQueueInput {
-        next_sounds: Mutex::new(Vec::new()),
+        next_sounds: Mutex::new(VecDeque::new()),
         keep_alive_if_empty: AtomicBool::new(keep_alive_if_empty),
     });
 
@@ -49,7 +49,7 @@ type SignalDone = Option<Sender<()>>;
 
 /// The input of the queue.
 pub struct SourcesQueueInput {
-    next_sounds: Mutex<Vec<(Sound, SignalDone)>>,
+    next_sounds: Mutex<VecDeque<(Sound, SignalDone)>>,
 
     // See constructor.
     keep_alive_if_empty: AtomicBool,
@@ -65,7 +65,7 @@ impl SourcesQueueInput {
         self.next_sounds
             .lock()
             .unwrap()
-            .push((Box::new(source) as Box<_>, None));
+            .push_back((Box::new(source) as Box<_>, None));
     }
 
     /// Adds a new source to the end of the queue.
@@ -82,7 +82,7 @@ impl SourcesQueueInput {
         self.next_sounds
             .lock()
             .unwrap()
-            .push((Box::new(source) as Box<_>, Some(tx)));
+            .push_back((Box::new(source) as Box<_>, Some(tx)));
         rx
     }
 
@@ -120,9 +120,6 @@ pub struct SourcesQueueOutput {
     // to complete the frame before transitioning to the next source.
     padding_samples_remaining: usize,
 }
-
-const SILENCE_SAMPLE_RATE: SampleRate = nz!(44100);
-const SILENCE_CHANNELS: ChannelCount = nz!(1);
 
 /// Returns a threshold span length that ensures frame alignment.
 ///
@@ -173,27 +170,38 @@ impl Source for SourcesQueueOutput {
 
     #[inline]
     fn channels(&self) -> ChannelCount {
-        // When current source is exhausted, peek at the next source's metadata
         if !self.current.is_exhausted() {
+            // Current source is active (producing samples)
+            // - Initially: never (Empty is exhausted immediately)
+            // - After append: the appended source while playing
+            // - With keep_alive: Zero (silence) while playing
             self.current.channels()
-        } else if let Some((next, _)) = self.input.next_sounds.lock().unwrap().first() {
+        } else if let Some((next, _)) = self.input.next_sounds.lock().unwrap().front() {
+            // Current source exhausted, peek at next queued source
+            // This is critical: UniformSourceIterator queries metadata during append,
+            // before any samples are pulled. We must report the next source's metadata.
             next.channels()
         } else {
-            // Queue is empty - return silence metadata
-            SILENCE_CHANNELS
+            // Queue is empty, no sources queued
+            // - Initially: Empty
+            // - With keep_alive: exhausted Zero between silence chunks (matches Empty)
+            // - Without keep_alive: Empty (will end on next())
+            self.current.channels()
         }
     }
 
     #[inline]
     fn sample_rate(&self) -> SampleRate {
-        // When current source is exhausted, peek at the next source's metadata
         if !self.current.is_exhausted() {
+            // Current source is active (producing samples)
             self.current.sample_rate()
-        } else if let Some((next, _)) = self.input.next_sounds.lock().unwrap().first() {
+        } else if let Some((next, _)) = self.input.next_sounds.lock().unwrap().front() {
+            // Current source exhausted, peek at next queued source
+            // This prevents wrong resampling setup in UniformSourceIterator
             next.sample_rate()
         } else {
-            // Queue is empty - return silence metadata
-            SILENCE_SAMPLE_RATE
+            // Queue is empty, no sources queued
+            self.current.sample_rate()
         }
     }
 
@@ -275,11 +283,14 @@ impl SourcesQueueOutput {
         let (next, signal_after_end) = {
             let mut next = self.input.next_sounds.lock().unwrap();
 
-            if next.is_empty() {
+            if let Some(next) = next.pop_front() {
+                next
+            } else {
+                let channels = self.current.channels();
                 let silence = Box::new(Zero::new_samples(
-                    SILENCE_CHANNELS,
-                    SILENCE_SAMPLE_RATE,
-                    threshold(SILENCE_CHANNELS),
+                    channels,
+                    self.current.sample_rate(),
+                    threshold(channels),
                 )) as Box<_>;
                 if self.input.keep_alive_if_empty.load(Ordering::Acquire) {
                     // Play a short silence in order to avoid spinlocking.
@@ -287,8 +298,6 @@ impl SourcesQueueOutput {
                 } else {
                     return Err(());
                 }
-            } else {
-                next.remove(0)
             }
         };
 
@@ -379,6 +388,40 @@ mod tests {
         assert_eq!(rx.next(), Some(-10.0));
         assert_eq!(rx.next(), Some(10.0));
         assert_eq!(rx.next(), Some(-10.0));
+    }
+
+    #[test]
+    fn append_updates_metadata() {
+        for keep_alive in [false, true] {
+            let (tx, rx) = queue::queue(keep_alive);
+            assert_eq!(
+                rx.channels(),
+                nz!(1),
+                "Initial channels should be 1 (keep_alive={keep_alive})"
+            );
+            assert_eq!(
+                rx.sample_rate(),
+                nz!(48000),
+                "Initial sample rate should be 48000 (keep_alive={keep_alive})"
+            );
+
+            tx.append(SamplesBuffer::new(
+                nz!(2),
+                nz!(44100),
+                vec![0.1, 0.2, 0.3, 0.4],
+            ));
+
+            assert_eq!(
+                rx.channels(),
+                nz!(2),
+                "Channels should update to 2 (keep_alive={keep_alive})"
+            );
+            assert_eq!(
+                rx.sample_rate(),
+                nz!(44100),
+                "Sample rate should update to 44100 (keep_alive={keep_alive})"
+            );
+        }
     }
 
     #[test]
