@@ -94,7 +94,7 @@ where
         let abs_sample = sample.abs();
 
         // Envelope follower (simple peak detector)
-        let sr = self.input.sample_rate() as f32;
+        let sr = self.input.sample_rate().get() as f32;
         let attack_coeff = f32::exp(-1.0 / (self.attack * sr).max(1.0));
         let release_coeff = f32::exp(-1.0 / (self.release * sr).max(1.0));
         if abs_sample > self.envelope {
