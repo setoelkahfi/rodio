@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- Mixer did not actually add sources sometimes
+
+## Version [0.22.1] (2026-02-22)
+
+### Fixed
+- docs.rs could not build the documentation
+
+## Version [0.22] (2026-02-22)
+
 ### Added
 
 - `Chirp` and `Empty` now implement `Iterator::size_hint` and `ExactSizeIterator`.

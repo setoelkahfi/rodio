@@ -4,10 +4,10 @@
 //! represents a sound (streaming or not). In order to play a sound, there are three steps:
 //!
 //! - Get an OS-Sink handle to a physical device. For example, get a sink to the system's
-//!   default sound device with [`DeviceSinkBuilder::open_default_stream()`].
+//!   default sound device with [`DeviceSinkBuilder::open_default_sink()`].
 //! - Create an object that represents the streaming sound. It can be a sine wave, a buffer, a
 //!   [`decoder`], etc. or even your own type that implements the [`Source`] trait.
-//! - Add the source to the OS-Sink using [`DeviceSink::mixer()`](OutputStream::mixer)
+//! - Add the source to the OS-Sink using [`MixerDeviceSink::mixer()`]
 //!   on the OS-Sink handle.
 //!
 //! Here is a complete example of how you would play an audio file:
@@ -111,16 +111,27 @@
 //! let source = source.take_duration(Duration::from_secs(5)).repeat_infinite();
 //! ```
 //!
-//! ## Alternative Decoder Backends
+//! ## Decoder Backends
 //!
-//! [Symphonia](https://github.com/pdeljanov/Symphonia) is an alternative decoder library that can be used in place
-//! of many of the default backends.
-//! Currently, the main benefit is that Symphonia is the only backend that supports M4A and AAC,
-//! but it may be used to implement additional optional functionality in the future.
+//! [Symphonia](https://github.com/pdeljanov/Symphonia) is the default decoder library.
+//! Rodio supports enabling all of Symphonia's codecs using the `symphonia-all` feature
+//! or enabling specific codecs using one of the `symphonia-{codec name}` features.
+//! By default, decoders for the most common file types (flac, mp3, mp4, vorbis, wav) are enabled.
 //!
-//! To use, enable either the `symphonia-all` feature to enable all Symphonia codecs
-//! or enable specific codecs using one of the `symphonia-{codec name}` features.
-//! If you enable one or more of the Symphonia codecs, you may want to set `default-features = false` in order
+//! ### Alternative Decoders
+//!
+//! Alternative decoder libraries are available for some filetypes:
+//!
+//! - claxon (flac)
+//! - hound (wav)
+//! - lewton (vorbis)
+//! - minimp3 (mp3)
+//!
+//! Symphonia is recommended for most usage. However, the alternative decoders are all licensed
+//! under either MIT or Apache 2.0 while Symphonia is licensed under MPL-2.0, so
+//! this may be a factor if you have strict licensing requirements.
+//!
+//! If you enable one of these, you may want to set `default-features = false`
 //! to avoid adding extra crates to your binary.
 //! See the [available feature flags](https://docs.rs/crate/rodio/latest/features) for all options.
 //!
@@ -169,6 +180,7 @@
     allow(unused_variables),
     allow(unreachable_code)
 )]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(feature = "playback")]
 pub use cpal::{
@@ -184,7 +196,6 @@ pub mod speakers;
 #[cfg(feature = "playback")]
 pub mod stream;
 #[cfg(feature = "wav_output")]
-#[cfg_attr(docsrs, doc(cfg(feature = "wav_output")))]
 mod wav_output;
 
 pub mod buffer;
@@ -211,8 +222,6 @@ pub use crate::spatial_player::SpatialPlayer;
 #[cfg(feature = "playback")]
 pub use crate::stream::{play, DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink, PlayError};
 #[cfg(feature = "wav_output")]
-#[cfg_attr(docsrs, doc(cfg(feature = "wav_output")))]
 pub use crate::wav_output::wav_to_file;
 #[cfg(feature = "wav_output")]
-#[cfg_attr(docsrs, doc(cfg(feature = "wav_output")))]
 pub use crate::wav_output::wav_to_writer;

@@ -1,6 +1,6 @@
 //! A speakers sink
 //!
-//! An audio *stream* originates at a [Source] and flows to a player. This is a
+//! An audio *stream* originates at a [`Source`](crate::Source) and flows to a player. This is a
 //! Sink that plays audio over the systems speakers or headphones through an
 //! audio output device;
 //!
@@ -109,7 +109,7 @@ mod builder;
 mod config;
 
 pub use builder::SpeakersBuilder;
-pub use config::OutputConfig;
+pub use config::{BufferSize, OutputConfig};
 
 /// Error that can occur when we can not list the output devices
 #[derive(Debug, thiserror::Error, Clone)]
