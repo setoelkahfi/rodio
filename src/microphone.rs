@@ -202,6 +202,21 @@ impl Source for Microphone {
     }
 }
 
+#[cfg(feature = "experimental")]
+impl crate::FixedSource for Microphone {
+    fn channels(&self) -> crate::ChannelCount {
+        self.config.channel_count
+    }
+
+    fn sample_rate(&self) -> crate::SampleRate {
+        self.config.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        None
+    }
+}
+
 impl Iterator for Microphone {
     type Item = Sample;
 
