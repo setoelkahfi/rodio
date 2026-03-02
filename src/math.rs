@@ -126,6 +126,20 @@ pub(crate) fn duration_to_float(duration: Duration) -> Float {
     }
 }
 
+#[must_use]
+pub(crate) fn nearest_multiple_of_two(n: u32) -> u32 {
+    if n <= 1 {
+        return 1;
+    }
+    let next = n.next_power_of_two();
+    let prev = next >> 1;
+    if n - prev <= next - n {
+        prev
+    } else {
+        next
+    }
+}
+
 /// Utility macro for getting a `NonZero` from a literal. Especially
 /// useful for passing in `ChannelCount` and `Samplerate`.
 /// Equivalent to: `const { core::num::NonZero::new($n).unwrap() }`
