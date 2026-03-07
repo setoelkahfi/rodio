@@ -224,6 +224,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.18.0"
+source = "git+https://github.com/setoelkahfi/cpal?branch=fix%2Fandroid-list-unique-devices#d5f325bdafe93b2ff720b61bb4a808a72466e4e3"
 dependencies = [
  "alsa",
  "coreaudio-rs",
